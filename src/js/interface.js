@@ -3,7 +3,8 @@
 window.addEventListener("load", function() {
     "use strict";
 
-    var assembleButton = document.getElementById("assemble"),
+    var convertButton = document.getElementById("convert-button"),
+        assembleButton = document.getElementById("assemble"),
         stepButton = document.getElementById("step"),
         microStepButton = document.getElementById("microstep"),
         stepBackButton = document.getElementById("step-back"),
@@ -11,6 +12,7 @@ window.addEventListener("load", function() {
         rangeDelay = document.getElementById("range-delay"),
         displayDelayMs = document.getElementById("display-delay-ms"),
         restartButton = document.getElementById("restart"),
+        pythonTextArea = document.getElementById("python-program"),
         textArea = document.getElementById("program"),
         memoryContainer = document.getElementById("memory-container"),
         memoryHeaders = document.getElementById("memory-headers"),
@@ -53,6 +55,7 @@ window.addEventListener("load", function() {
         programCodeMirror.clearHistory();
         saveFile();
         localStorage.setItem("marie-program",null);
+        localStorage.setItem("python-program",null);
         sessionStorage.setItem('savedFileID',null); //resets GAPI FileInfo upon New File
         sessionStorage.setItem("parentID",null); //resets GAPI FileInfo upon New File
         $("#saved-status").text("New file");
@@ -174,6 +177,7 @@ window.addEventListener("load", function() {
         interval = null,
         lastErrorLine = null,
         lastCurrentLine = null,
+        lastErrorLinePython = null,
         lastBreakPointLine = null,
         currentInstructionLine = null,
         breaking = false,
@@ -223,6 +227,7 @@ window.addEventListener("load", function() {
 
     handleLoadingUrlCode();
     textArea.value = localStorage.getItem("marie-program") || "";
+    pythonTextArea.value = localStorage.getItem("python-program") || "";
 
     if(textArea.value !== "") {
         $("#saved-status").text("Restored file");
@@ -235,6 +240,11 @@ window.addEventListener("load", function() {
         mode: "marie",
         lineNumbers: true,
         gutters: ["CodeMirror-linenumbers", "breakpoints"]
+    });
+
+    var pythonProgramCodeMirror = CodeMirror.fromTextArea(pythonTextArea, {
+        mode: "python",
+        lineNumbers: true
     });
 
     if(theme === "dark") {
@@ -1078,6 +1088,34 @@ window.addEventListener("load", function() {
         }
     }
 
+    convertButton.addEventListener("click", () => {
+        const tokens = [];
+
+        for (let line = 0; line < pythonProgramCodeMirror.lineCount(); line++) {
+            const lineTokens = pythonProgramCodeMirror.getLineTokens(line);
+            lineTokens.forEach(token => token.line = line + 1);
+            tokens.push(...lineTokens);
+        }
+
+        if (lastErrorLinePython != null) {
+            pythonProgramCodeMirror.removeLineClass(lastErrorLinePython, "background", "error-line");
+        }
+
+        const converter = new PythonToMarieConverter(tokens);
+
+        try {
+            const convertedCode = converter.convert();
+            programCodeMirror.setValue(convertedCode);
+        } catch (e) {
+            setStatus(e.toString(), true);
+            lastErrorLinePython = e.line - 1;
+            pythonProgramCodeMirror.addLineClass(lastErrorLinePython, "background", "error-line");
+            throw e;
+        }
+
+        setStatus("Converted successfully", false);
+    });
+
     assembleButton.addEventListener("click", function() {
         assembleButton.textContent = "Assembling...";
         assembleButton.disabled = true;
@@ -1436,6 +1474,7 @@ window.addEventListener("load", function() {
 
     function saveFile(autoSave) {
         window.localStorage.setItem("marie-program", programCodeMirror.getValue());
+        window.localStorage.setItem("python-program", pythonProgramCodeMirror.getValue());
 
         var breakpoints = [];
         var count = programCodeMirror.lineCount(), i;
