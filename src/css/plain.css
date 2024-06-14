@@ -55,7 +55,7 @@ select, option {
     background: inherit;
 }
 
-#program-container {
+#python-program-container, #program-container {
     display: flex;
     flex-direction: column;
     flex: 2 0 0;
@@ -68,7 +68,7 @@ select, option {
     height: 100%;
 }
 
-#register-container {
+#python-program-container, #register-container {
     width: 60px;
 }
 

@@ -292,7 +292,7 @@ footer {
         flex-wrap: wrap;
     }
 
-    #program-container {
+    #python-program-container, #program-container {
         width: 100%;
     }
 }
