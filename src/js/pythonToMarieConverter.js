@@ -337,6 +337,16 @@ let PythonToMarieConverter, PythonToMarieConverterError;
         this.constants.push(constant);
     };
 
+    PythonToMarieConverter.prototype.operatorToSkipcond = function (operator) {
+        const opCodeMap = {
+            ">": "800",  // Skipcond 800 (Pula se ACC > 0)
+            "==": "400", // Skipcond 400 (Pula se ACC == 0)
+            "<": "000"   // Skipcond 000 (Pula se ACC < 0)
+        };
+    
+        return opCodeMap[operator] || "400"; // Padrão para "==", caso o operador não seja reconhecido
+    };
+
     // Custom error handling
     PythonToMarieConverterError = function (message, line) {
         this.message = message;
