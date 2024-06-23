@@ -1,10 +1,9 @@
-let PythonToMarieConverter, PythonToMarieConverterError;
-
 (function () {
     PythonToMarieConverter = function (tokens) {
         this.tokens = tokens;
         this.current = 0;
         this.ifCounter = 0;
+        this.forCounter = 0; // Counter for for loops
         this.nextLabelForIfExit = null;
         this.currentConsumedTokens = [];
 
@@ -12,6 +11,7 @@ let PythonToMarieConverter, PythonToMarieConverterError;
         this.variables = new Map();
         this.subroutines = [];
         this.constants = [];
+        this.ifStack = [];
 
         this.usesMultiplicationSubroutine = false;
     };
@@ -64,6 +64,32 @@ let PythonToMarieConverter, PythonToMarieConverterError;
 
         if (string && token.string !== string) {
             this.throwError(`Expected ${tokenType || "token"} to be equal to "${string}"`);
+        }
+
+        this.advanceToken();
+        return token;
+    };
+
+    PythonToMarieConverter.prototype.consumeAnyToken = function (...conditions) {
+        this.skipUselessTokens();
+
+        const token = this.peekToken();
+        if (this.isAtEnd()) {
+            this.throwError("Reached end of input but was expecting a token.");
+        }
+
+        const matchFound = conditions.some(condition => {
+            if (Array.isArray(condition)) {
+                // Expecting a tuple of [type, string]
+                return token.type === condition[0] && (condition.length === 1 || token.string === condition[1]);
+            } else {
+                // Expecting just a type
+                return token.type === condition;
+            }
+        });
+
+        if (!matchFound) {
+            this.throwError(`Expected one of the following: ${conditions.map(JSON.stringify).join(", ")}, but got a ${token.type} with value ${token.string}.`);
         }
 
         this.advanceToken();
@@ -161,6 +187,8 @@ let PythonToMarieConverter, PythonToMarieConverterError;
             this.handlePrint();
         } else if (this.matchToken("keyword", "if")) {
             this.handleIf();
+        } else if (this.matchToken("keyword", "for")) {
+            this.handleFor();
         } else if (!this.isAtEnd()) {
             this.throwError("Unidentified expression.");
         }
@@ -170,21 +198,27 @@ let PythonToMarieConverter, PythonToMarieConverterError;
         const variable = this.consumeToken("variable");
         this.consumeToken("operator", "=");
 
-        if (this.matchToken("builtin", "input")) {
-            this.handleInputAssignment(variable.string);
-        } else if (this.matchToken("number")) {
-            const value = this.consumeToken("number");
-            this.variables.set(variable.string, `${variable.string}, DEC ${value.string} / ${this.getFormattedConsumedTokens()}`);
-        } else if (this.matchToken("variable")) {
-            const firstVariable = this.consumeToken("variable");
-            const operator = this.consumeToken("operator");
-            const secondVariable = this.consumeToken("variable");
+        if (this.matchToken("number") || this.matchToken("variable")) {
+            const firstOperand = this.consumeAnyToken("number", "variable");
 
-            if (!["+", "-", "*"].includes(operator.string)) {
-                this.throwError(`Only "+", "-" and "*" operations supported.`);
+            if (this.matchToken("operator")) {
+                const operator = this.consumeToken("operator");
+                const secondOperand = this.consumeAnyToken(["variable"], ["number"]);
+
+                this.handleArithmeticOperation(variable.string, firstOperand.string, operator.string, secondOperand.string);
+            } else {
+                if (firstOperand.type === "number") {
+                    this.variables.set(variable.string, `${variable.string}, DEC ${firstOperand.string}`);
+                } else {
+                    this.appendInstruction(`Load ${firstOperand.string}`);
+                    this.appendInstruction(`Store ${variable.string}`);
+                    this.variables.set(variable.string, `${variable.string}, DEC 0 / ${variable} = ${firstOperand.string}`);
+                }
             }
-
-            this.handleArithmeticOperation(variable.string, firstVariable.string, operator.string, secondVariable.string);
+        } else if (this.matchToken("builtin", "input")) {
+            this.handleInputAssignment(variable.string);
+        } else {
+            this.throwError("Invalid assignment expression.");
         }
     };
 
@@ -208,67 +242,124 @@ let PythonToMarieConverter, PythonToMarieConverterError;
     };
 
     PythonToMarieConverter.prototype.handleIf = function () {
+        const initialIndent = this.peekToken().state.indent;
         this.consumeToken("keyword", "if");
         this.consumeToken(null, "(");
-        const leftVariable = this.consumeToken("variable");
+        const leftOperand = this.consumeAnyToken("variable", "number");
         const operator = this.consumeToken("operator");
-        const rightVariable = this.consumeToken("variable");
+        const rightOperand = this.consumeAnyToken("variable", "number");
         this.consumeToken(null, ")");
         this.consumeToken(null, ":");
 
-        if (!["==", ">", "<"].includes(operator.string)) {
-            this.throwError(`Only "==", ">", and "<" operations supported in if statements.`);
-        }
-
-        const skipcondOpcode = {
-            "<": "000",
-            "==": "400",
-            ">": "800"
-        }[operator.string];
+        const leftIsNumber = !isNaN(parseInt(leftOperand.string));
+        const rightIsNumber = !isNaN(parseInt(rightOperand.string));
+        const leftVarName = leftIsNumber ? this.ensureConstantAndGetItsName(leftOperand.string) : leftOperand.string;
+        const rightVarName = rightIsNumber ? this.ensureConstantAndGetItsName(rightOperand.string) : rightOperand.string;
 
         const ifExitLabel = `EndIf${++this.ifCounter}`;
+        this.ifStack.push(ifExitLabel);
 
-        this.appendInstruction(`Load ${leftVariable.string}`);
-        this.appendInstruction(`Subt ${rightVariable.string}`);
-        this.appendInstruction(`Skipcond ${skipcondOpcode}`);
+        this.appendInstruction(`Load ${leftVarName}`);
+        this.appendInstruction(`Subt ${rightVarName}`);
+        this.appendInstruction(`Skipcond ${this.operatorToSkipcond(operator.string)}`);
         this.appendInstruction(`Jump ${ifExitLabel}`);
 
-        const initialIndent = this.peekToken().state.ident;
+        while (!this.isAtEnd()) {
+            this.skipUselessTokens();
+            if (this.peekToken().state.indent <= initialIndent) {
+                break;
+            }
+            this.processStatement();
+        }
+
+        const endLabel = this.ifStack.pop();
+        this.appendInstruction(`${endLabel}`);
+    };
+
+    PythonToMarieConverter.prototype.handleFor = function () {
+        const initialIndent = this.peekToken().state.indent;
+        this.consumeToken("keyword", "for");
+        const loopVariable = this.consumeToken("variable");
+        this.consumeToken("keyword", "in");
+        this.consumeToken("builtin", "range");
+        this.consumeToken(null, "(");
+        const startValue = this.consumeToken("number");
+        this.consumeToken(null, ",");
+        const endValue = this.consumeToken("number");
+        this.consumeToken(null, ")");
+        this.consumeToken(null, ":");
+
+        const forStartLabel = `ForStart${++this.forCounter}`;
+        const forEndLabel = `ForEnd${this.forCounter}`;
+
+        this.appendInstruction(`${forStartLabel}`);
+        this.appendInstruction(`Load ${loopVariable.string}`);
+        this.appendInstruction(`Subt For${loopVariable.string}`);
+        this.appendInstruction(`Skipcond 000`);
+        this.appendInstruction(`Jump ${forEndLabel}`);
 
         while (!this.isAtEnd()) {
             this.skipUselessTokens();
 
-            if (this.peekToken().state.ident <= initialIndent) {
+            if (this.peekToken().state.indent < initialIndent) {
                 break;
             }
 
             this.processStatement();
         }
 
-        this.nextLabelForIfExit = ifExitLabel;
+        this.appendInstruction(`Load ${loopVariable.string}`);
+        this.appendInstruction(`Add One`);
+        this.appendInstruction(`Store ${loopVariable.string}`);
+        this.appendInstruction(`Jump ${forStartLabel}`);
+        this.appendInstruction(`${forEndLabel}: Halt`);
+
+        this.variables.set(loopVariable.string, `${loopVariable.string}, DEC ${startValue.string}`);
+        this.variables.set(`For${loopVariable.string}`, `${loopVariable.string}, DEC ${endValue.string}`);
+        this.variables.set('One', 'One, DEC 1');
     };
 
-    // Instruction handling functions
     PythonToMarieConverter.prototype.appendInstruction = function (instruction) {
-        const currentConsumedTokensFormatted = this.getFormattedConsumedTokens();
-        if (currentConsumedTokensFormatted) {
-            this.instructions.push(`/ ${currentConsumedTokensFormatted}`);
+        if (instruction.match(/^(EndIf\d+|ForEnd\d+|ForStart\d+)/)) {
+            this.instructions.push(`${instruction},`);
+        } else {
+            if (this.instructions.length > 0 && this.instructions[this.instructions.length - 1].match(/,$/)) {
+                this.instructions[this.instructions.length - 1] += ` ${instruction}`;
+            } else {
+                this.instructions.push(instruction);
+            }
         }
-
-        if (this.nextLabelForIfExit != null && instruction !== "") {
-            instruction = `${this.nextLabelForIfExit}, ${instruction}`;
-            this.nextLabelForIfExit = null;
-        }
-
-        this.instructions.push(instruction);
     };
 
     PythonToMarieConverter.prototype.addEmptyLine = function () {
         this.appendInstruction("");
     };
 
+    PythonToMarieConverter.prototype.ensureConstant = function (name, value) {
+        if (!this.constants.includes(`${name}, DEC ${value}`)) {
+            this.constants.push(`${name}, DEC ${value}`);
+        }
+    };
+
+    PythonToMarieConverter.prototype.ensureConstantAndGetItsName = function (value) {
+        if (!isNaN(parseInt(value))) {
+            const constName = `Const${value}`;
+            this.ensureConstant(constName, value);
+            return constName;
+        }
+        return value;
+    };
+
     // Arithmetic operation handling functions
     PythonToMarieConverter.prototype.handleArithmeticOperation = function (resultVar, var1, operator, var2) {
+        if (!isNaN(parseInt(var1))) {
+            var1 = this.ensureConstantAndGetItsName(var1);
+        }
+
+        if (!isNaN(parseInt(var2))) {
+            var2 = this.ensureConstantAndGetItsName(constName, var2);
+        }
+
         switch (operator) {
             case "+":
                 this.appendInstruction(`Load ${var1}`);
@@ -289,7 +380,6 @@ let PythonToMarieConverter, PythonToMarieConverterError;
                 break;
         }
         this.appendInstruction(`Store ${resultVar}`);
-
         this.variables.set(resultVar, `${resultVar}, DEC 0 / ${resultVar} = ${var1} ${operator} ${var2}`);
     };
 
@@ -324,8 +414,7 @@ let PythonToMarieConverter, PythonToMarieConverterError;
         this.appendSubroutine("");
         this.appendSubroutine("MultResult, DEC 0");
         this.appendSubroutine("");
-        this.appendConstant("/ Constants");
-        this.appendConstant("One, DEC 1");
+        this.appendSubroutine("One, DEC 1");
     };
 
     // Append subroutine and constant functions
@@ -343,7 +432,7 @@ let PythonToMarieConverter, PythonToMarieConverterError;
             "==": "400", // Skipcond 400 (Pula se ACC == 0)
             "<": "000"   // Skipcond 000 (Pula se ACC < 0)
         };
-    
+
         return opCodeMap[operator] || "400"; // Padrão para "==", caso o operador não seja reconhecido
     };
 
