@@ -276,8 +276,8 @@
         this.appendInstruction(`${endLabel}`);
     };
 
+
     PythonToMarieConverter.prototype.handleFor = function () {
-        const initialIndent = this.peekToken().state.indent;
         this.consumeToken("keyword", "for");
         const loopVariable = this.consumeToken("variable");
         this.consumeToken("keyword", "in");
@@ -298,10 +298,12 @@
         this.appendInstruction(`Skipcond 000`);
         this.appendInstruction(`Jump ${forEndLabel}`);
 
+        const initialIndent = this.peekToken().state.indent;
+
         while (!this.isAtEnd()) {
             this.skipUselessTokens();
 
-            if (this.peekToken().state.indent < initialIndent) {
+            if (this.peekNextToken().state.indent < initialIndent) {
                 break;
             }
 
@@ -312,16 +314,23 @@
         this.appendInstruction(`Add One`);
         this.appendInstruction(`Store ${loopVariable.string}`);
         this.appendInstruction(`Jump ${forStartLabel}`);
-        this.appendInstruction(`${forEndLabel}: Halt`);
+        this.appendInstruction(`${forEndLabel}`);
 
         this.variables.set(loopVariable.string, `${loopVariable.string}, DEC ${startValue.string}`);
-        this.variables.set(`For${loopVariable.string}`, `${loopVariable.string}, DEC ${endValue.string}`);
+        this.variables.set(`For${loopVariable.string}`, `For${loopVariable.string}, DEC ${endValue.string}`);
         this.variables.set('One', 'One, DEC 1');
     };
 
     PythonToMarieConverter.prototype.appendInstruction = function (instruction) {
-        if (instruction.match(/^(EndIf\d+|ForEnd\d+|ForStart\d+)/)) {
-            this.instructions.push(`${instruction},`);
+        if (instruction === '') {
+            return;
+        }
+        if (instruction.match(/^(EndIf\d+|ForEnd\d+|ForStart\d+|Else\d+)/)) {
+            if (this.instructions.length > 0 && this.instructions[this.instructions.length - 1].match(/,$/)) {
+                this.instructions[this.instructions.length - 1] += ` ${instruction}`;
+            } else {
+                this.instructions.push(`${instruction},`);
+            }
         } else {
             if (this.instructions.length > 0 && this.instructions[this.instructions.length - 1].match(/,$/)) {
                 this.instructions[this.instructions.length - 1] += ` ${instruction}`;
@@ -357,7 +366,7 @@
         }
 
         if (!isNaN(parseInt(var2))) {
-            var2 = this.ensureConstantAndGetItsName(constName, var2);
+            var2 = this.ensureConstantAndGetItsName(var2);
         }
 
         switch (operator) {
