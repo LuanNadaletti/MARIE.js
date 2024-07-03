@@ -18,8 +18,6 @@
 
     // Main function to convert tokens to MARIE assembly code
     PythonToMarieConverter.prototype.convert = function () {
-        console.log(this.tokens);
-
         while (!this.isAtEnd()) {
             this.processStatement();
         }
